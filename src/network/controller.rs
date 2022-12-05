@@ -29,7 +29,6 @@ pub struct NetworkController {
         Sender<NetworkControllerEvent>,
         Receiver<NetworkControllerEvent>,
     ),
-    pub connected_peers: HashMap<String, Peers>,
 }
 
 impl NetworkController {
@@ -48,25 +47,26 @@ impl NetworkController {
         let mut peers_file = File::open(peers_file_path)?;
         let mut content = String::new();
         peers_file.read_to_string(&mut content)?;
-        //TODO: add type
-        let mut known_peers: HashMap<String, Peers> = serde_json::from_str(&content)?;
+        let known_peers: HashMap<String, Peers> = serde_json::from_str(&content)?;
 
-        let mut networkController: NetworkController = NetworkController {
+        let mut network_controller: NetworkController = NetworkController {
             peers: Arc::new(Mutex::new(known_peers)),
             channel: channel(4096),
-            connected_peers: HashMap::new(),
         };
 
-        println!("{:?}", networkController.peers);
-        // wait peer_file_dump_interval_seconds before playing this function (loop)
-        networkController.create_tcp_listener(listen_port).await?;
-        //networkController.manage_peer_file(peers_file_path, peer_file_dump_interval_seconds).await?;
+        // Listen to new TCP connections
+        network_controller.create_tcp_listener(listen_port).await?;
+
+        // Update the peer file
+        network_controller
+            .manage_peer_file(peers_file_path, peer_file_dump_interval_seconds)
+            .await?;
 
         // TODO: define who is "the most promising peer"
-        //networkController.peer_connection().await?;
+        //network_controller.peer_connection().await?;
 
         // Remove Idle using there last_alive value or if they are None
-        Ok(networkController)
+        Ok(network_controller)
     }
 
     // Listen to new collection and propagate the info
@@ -77,6 +77,7 @@ impl NetworkController {
         // Listen to TCP connection
         let listener = TcpListener::bind(format!("127.0.0.40:{}", port)).await?;
 
+        // TODO: enable this
         //tokio::spawn(async move {
         loop {
             // Accept new incoming connexion
@@ -105,10 +106,12 @@ impl NetworkController {
                                 .expect("failed to write data to socket");
                         }
                     }*/
+                    
+                    let mut peer_list = self.peers.lock().await;
 
-                    if !self.connected_peers.contains_key(&addr.ip().to_string()) {
+                    if !peer_list.contains_key(&addr.ip().to_string()) {
                         // Add new to connected list
-                        self.connected_peers.insert(
+                        peer_list.insert(
                             addr.ip().to_string(),
                             Peers {
                                 status: Status::InHandshaking,
@@ -117,16 +120,20 @@ impl NetworkController {
                             },
                         );
                     } else {
-                        let peer = self.connected_peers.get(&addr.ip().to_string()).unwrap();
                         // Update peer status to InHandshaking
-                        self.connected_peers.insert(
-                            addr.ip().to_string(),
-                            Peers {
-                                status: Status::InHandshaking,
-                                last_alive: peer.last_alive,
-                                last_failure: peer.last_failure,
-                            },
-                        );
+                        match peer_list.get(&addr.ip().to_string()) {
+                            Some(peer) => {
+                                peer_list.clone().insert(
+                                    addr.ip().to_string(),
+                                    Peers {
+                                        status: Status::InHandshaking,
+                                        last_alive: peer.last_alive,
+                                        last_failure: peer.last_failure,
+                                    },
+                                );
+                            }
+                            None => {}
+                        };
                     }
 
                     // Peer is connected to you node
@@ -140,7 +147,7 @@ impl NetworkController {
                 Err(e) => {
                     // Set peer status to
                     // Set peer last_failure
-                    //println!("couldn't get client: {:?}", e)
+                    println!("couldn't get client: {:?}", e)
                 }
             }
         }
@@ -170,7 +177,7 @@ impl NetworkController {
     }
 
     // Check if the list have been updated if so update the file
-    /*async fn manage_peer_file(
+    async fn manage_peer_file(
         &self,
         peers_file_path: &str,
         interval: u64,
@@ -183,14 +190,14 @@ impl NetworkController {
             let mut peers_file = File::open(peers_file_path)?;
             let mut content = String::new();
             peers_file.read_to_string(&mut content)?;
-            let known_peers = serde_json::from_str(&content)?;
+            let known_peers: HashMap<String, Peers> = serde_json::from_str(&content)?;
 
             // TODO: find a better way
             // Extract data from Arc
             let current_peers_clone = self.peers.lock().await;
-            let current_peers: Vec<Peers> = current_peers_clone.to_vec();
-
-            // Vec comparition to rewrite to replace file content with right peers
+            let current_peers: HashMap<String, Peers> = current_peers_clone.clone();
+            
+            // Hashmap comparition to rewrite to replace file content with right peers
             if !NetworkController::compare_list(&current_peers, &known_peers) {
                 let peers_to_write = serde_json::to_string(&current_peers)?;
                 // Empty file and write current peers in it
@@ -202,9 +209,14 @@ impl NetworkController {
                 file.write(peers_to_write.as_bytes())?;
             }
         }
-    }*/
+    }
 
-    pub fn compare_list<Peers: Eq + Hash>(a: &Vec<Peers>, b: &Vec<Peers>) -> bool {
+    // Compare equality of two peer list
+    // The current list we have and the one in the JSON file
+    pub fn compare_list<Peers: Eq + Hash>(
+        a: &HashMap<String, Peers>,
+        b: &HashMap<String, Peers>,
+    ) -> bool {
         let a: HashSet<_> = a.iter().collect();
         let b: HashSet<_> = b.iter().collect();
 
