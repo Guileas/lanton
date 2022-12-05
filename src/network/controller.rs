@@ -57,7 +57,11 @@ impl NetworkController {
 
         // Listen to new TCP connections
         network_controller
-            .create_tcp_listener(listen_port, max_incoming_connections, max_simultaneous_incoming_connection_attempts)
+            .create_tcp_listener(
+                listen_port,
+                max_incoming_connections,
+                max_simultaneous_incoming_connection_attempts,
+            )
             .await?;
 
         // Update the peer file
@@ -66,7 +70,10 @@ impl NetworkController {
             .await?;
 
         // TODO: define who is "the most promising peer"
-        //network_controller.peer_connection().await?;
+        // Select peer in list who has the right status and is most promising to be connected with
+        network_controller
+            .peer_connection("127.0.2.51", max_simultaneous_outgoing_connection_attempts)
+            .await?;
 
         // Remove Idle using there last_alive value or if they are None
         Ok(network_controller)
@@ -77,10 +84,11 @@ impl NetworkController {
         &mut self,
         port: u32,
         max_incoming_connections: u64,
-        max_connection_attempts: u64
+        max_simultaneous_connection_attempts: u64,
     ) -> Result<(), Box<dyn Error>> {
         // Listener channel
         let tx = self.channel.0.clone();
+        let peer_list = self.peers.lock().await;
 
         // Listen to TCP connection
         let listener = TcpListener::bind(format!("127.0.0.40:{}", port)).await?;
@@ -96,17 +104,19 @@ impl NetworkController {
                 .len() as u64;
 
             let current_inHandshaking_peer_sum = peer_list
-            .clone()
-            .into_iter()
-            .filter(|(_, v)| v.status == Status::InHandshaking)
-            .collect::<HashMap<String, Peers>>()
-            .len() as u64;
+                .clone()
+                .into_iter()
+                .filter(|(_, v)| v.status == Status::InHandshaking)
+                .collect::<HashMap<String, Peers>>()
+                .len() as u64;
 
             println!("{:?}", peer_list.len());
             println!("{:?}", max_incoming_connections);
 
             // Check if there's still some place to add InAlive and InHandshaking in the peer list else reject connection
-            if current_inAlive_peer_sum > max_incoming_connections || current_inHandshaking_peer_sum > max_connection_attempts  {
+            if current_inAlive_peer_sum > max_incoming_connections
+                || current_inHandshaking_peer_sum > max_simultaneous_connection_attempts
+            {
                 println!("Two much peer in this state");
                 return Ok(());
             }
@@ -185,22 +195,66 @@ impl NetworkController {
     }
 
     // Node try to connect to a peer
-    async fn peer_connection(&self, peer_adress: &str) -> Result<(), Box<dyn Error>> {
+    async fn peer_connection(
+        &self,
+        peer_adress: &str,
+        max_outgoing_connection_attempts: u64,
+    ) -> Result<(), Box<dyn Error>> {
         let tx = self.channel.0.clone();
+        let peer_list = self.peers.lock().await;
 
-        match TcpStream::connect(peer_adress).await {
-            Ok(stream) => {
-                tx.send(NetworkControllerEvent::CandidateConnection(
-                    String::from(peer_adress),
-                    stream,
-                    true,
-                ))
-                .await;
+        let connection_sum = peer_list
+            .clone()
+            .into_iter()
+            .filter(|(_, v)| {
+                v.status == Status::OutConnecting || v.status == Status::OutHandshaking
+            })
+            .collect::<HashMap<String, Peers>>()
+            .len() as u64;
 
-                println!("Connected to the server!");
-            }
-            Err(err) => {
-                println!("Couldn't connect to server...");
+        if connection_sum < max_outgoing_connection_attempts {
+            match peer_list.get(&peer_adress.to_string()) {
+                Some(peer) => {
+                    peer_list.clone().insert(
+                        peer_adress.to_string(),
+                        Peers {
+                            status: Status::OutConnecting,
+                            last_alive: peer.last_alive,
+                            last_failure: peer.last_failure,
+                        },
+                    );
+                }
+                None => {}
+            };
+
+            match TcpStream::connect(peer_adress).await {
+                Ok(stream) => {
+                    match peer_list.get(&peer_adress.to_string()) {
+                        Some(peer) => {
+                            peer_list.clone().insert(
+                                peer_adress.to_string(),
+                                Peers {
+                                    status: Status::OutHandshaking,
+                                    last_alive: peer.last_alive,
+                                    last_failure: peer.last_failure,
+                                },
+                            );
+                        }
+                        None => {}
+                    };
+
+                    tx.send(NetworkControllerEvent::CandidateConnection(
+                        String::from(peer_adress),
+                        stream,
+                        true,
+                    ))
+                    .await;
+
+                    println!("Connected to the server!");
+                }
+                Err(err) => {
+                    println!("Couldn't connect to server...");
+                }
             }
         }
         Ok(())
