@@ -56,7 +56,9 @@ impl NetworkController {
         };
 
         // Listen to new TCP connections
-        network_controller.create_tcp_listener(listen_port).await?;
+        network_controller
+            .create_tcp_listener(listen_port, max_incoming_connections, max_simultaneous_incoming_connection_attempts)
+            .await?;
 
         // Update the peer file
         network_controller
@@ -71,16 +73,43 @@ impl NetworkController {
     }
 
     // Listen to new collection and propagate the info
-    async fn create_tcp_listener(&mut self, port: u32) -> Result<(), Box<dyn Error>> {
+    async fn create_tcp_listener(
+        &mut self,
+        port: u32,
+        max_incoming_connections: u64,
+        max_connection_attempts: u64
+    ) -> Result<(), Box<dyn Error>> {
         // Listener channel
         let tx = self.channel.0.clone();
 
         // Listen to TCP connection
         let listener = TcpListener::bind(format!("127.0.0.40:{}", port)).await?;
-
+        let mut peer_list = self.peers.lock().await;
         // TODO: enable this
         //tokio::spawn(async move {
         loop {
+            let current_inAlive_peer_sum = peer_list
+                .clone()
+                .into_iter()
+                .filter(|(_, v)| v.status == Status::InAlive)
+                .collect::<HashMap<String, Peers>>()
+                .len() as u64;
+
+            let current_inHandshaking_peer_sum = peer_list
+            .clone()
+            .into_iter()
+            .filter(|(_, v)| v.status == Status::InHandshaking)
+            .collect::<HashMap<String, Peers>>()
+            .len() as u64;
+
+            println!("{:?}", peer_list.len());
+            println!("{:?}", max_incoming_connections);
+
+            // Check if there's still some place to add InAlive and InHandshaking in the peer list else reject connection
+            if current_inAlive_peer_sum > max_incoming_connections || current_inHandshaking_peer_sum > max_connection_attempts  {
+                println!("Two much peer in this state");
+                return Ok(());
+            }
             // Accept new incoming connexion
             match listener.accept().await {
                 Ok((mut _socket, addr)) => {
@@ -107,8 +136,6 @@ impl NetworkController {
                                 .expect("failed to write data to socket");
                         }
                     }*/
-                    
-                    let mut peer_list = self.peers.lock().await;
 
                     if !peer_list.contains_key(&addr.ip().to_string()) {
                         // Add new to connected list
@@ -228,7 +255,7 @@ impl NetworkController {
 
     pub async fn feedback_peer_alive(&mut self, ip: &str) -> () {
         //TODO: set the peer in InAlive or OutAlive state
-        let mut peer_list = self.peers.lock().await;
+        /*let mut peer_list = self.peers.lock().await;
         match peer_list.get(ip) {
             Some(peer) => {
                 peer_list.insert(
@@ -241,11 +268,11 @@ impl NetworkController {
                 )
             }
             None => { println!("No peer found for this Ip");}
-        };
+        };*/
     }
 
     pub async fn feedback_peer_banned(&mut self, ip: &str) -> () {
-        let mut peer_list = self.peers.lock().await;
+        /*let mut peer_list = self.peers.lock().await;
         match peer_list.get(ip) {
             Some(peer) => {
                 peer_list.insert(
@@ -258,11 +285,11 @@ impl NetworkController {
                 )
             }
             None => { println!("No peer found for this Ip");}
-        };
+        };*/
     }
 
     pub async fn feedback_peer_closed(&mut self, ip: &str) -> () {
-        let mut peer_list = self.peers.lock().await;
+        /*let mut peer_list = self.peers.lock().await;
         match peer_list.get(ip) {
             Some(peer) => {
                 peer_list.insert(
@@ -275,11 +302,11 @@ impl NetworkController {
                 )
             }
             None => { println!("No peer found for this Ip");}
-        };
+        };*/
     }
 
     pub async fn feedback_peer_failed(&self, ip: &str) -> () {
-        let mut peer_list = self.peers.lock().await;
+        /*let mut peer_list = self.peers.lock().await;
         match peer_list.get(ip) {
             Some(peer) => {
                 peer_list.insert(
@@ -292,7 +319,7 @@ impl NetworkController {
                 )
             }
             None => { println!("No peer found for this Ip");}
-        };
+        };*/
     }
 
     //after handshake, and then again periodically, main.rs should ask alive peers for the list of peer IPs they know about, and feed //them to the network controller:
@@ -313,5 +340,4 @@ impl NetworkController {
             .await
             .ok_or(String::from("Channel closed"))
     }
-
 }
