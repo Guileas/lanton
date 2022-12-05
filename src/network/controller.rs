@@ -24,7 +24,7 @@ pub enum NetworkControllerEvent {
 }
 
 pub struct NetworkController {
-    pub peers: Arc<Mutex<Vec<Peers>>>,
+    pub peers: Arc<Mutex<HashMap<String, Peers>>>,
     pub channel: (
         Sender<NetworkControllerEvent>,
         Receiver<NetworkControllerEvent>,
@@ -49,7 +49,7 @@ impl NetworkController {
         let mut content = String::new();
         peers_file.read_to_string(&mut content)?;
         //TODO: add type
-        let mut known_peers: Vec<Peers> = serde_json::from_str(&content)?;
+        let mut known_peers: HashMap<String, Peers> = serde_json::from_str(&content)?;
 
         let mut networkController: NetworkController = NetworkController {
             peers: Arc::new(Mutex::new(known_peers)),
@@ -57,11 +57,10 @@ impl NetworkController {
             connected_peers: HashMap::new(),
         };
 
+        println!("{:?}", networkController.peers);
         // wait peer_file_dump_interval_seconds before playing this function (loop)
         networkController.create_tcp_listener(listen_port).await?;
-        networkController
-            .manage_peer_file(peers_file_path, peer_file_dump_interval_seconds)
-            .await?;
+        //networkController.manage_peer_file(peers_file_path, peer_file_dump_interval_seconds).await?;
 
         // TODO: define who is "the most promising peer"
         //networkController.peer_connection().await?;
@@ -171,7 +170,7 @@ impl NetworkController {
     }
 
     // Check if the list have been updated if so update the file
-    async fn manage_peer_file(
+    /*async fn manage_peer_file(
         &self,
         peers_file_path: &str,
         interval: u64,
@@ -203,7 +202,7 @@ impl NetworkController {
                 file.write(peers_to_write.as_bytes())?;
             }
         }
-    }
+    }*/
 
     pub fn compare_list<Peers: Eq + Hash>(a: &Vec<Peers>, b: &Vec<Peers>) -> bool {
         let a: HashSet<_> = a.iter().collect();
