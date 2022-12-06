@@ -54,8 +54,6 @@ impl NetworkController {
             peers: Arc::new(Mutex::new(known_peers)),
             channel: channel(4096),
         };
-        println!("{:?}",network_controller.peers);
-        network_controller.get_good_peer_ips().await;
         
         // Listen to new TCP connections
         network_controller
@@ -383,19 +381,21 @@ impl NetworkController {
         // should merge the new peers to the existing peer list in a smart way
     }
 
-    pub async fn get_good_peer_ips(&mut self) {
-        let mut peer_list = self.peers.lock().await;
-        let aze = peer_list
-        .clone()
-        .into_iter()
-        .filter(|(_, v)| v.status != Status::Banned)
-        .collect::<HashMap<String, Peers>>();
+    // Send list of peer IPs we know about to peers
+    pub async fn get_good_peer_ips(&mut self) -> Vec<String> {
+        let peer_list = self.peers.lock().await;
+        // TODO: sorts the peers from "best" to "worst"
+        let good_peer_ips = peer_list
+            .clone()
+            .into_iter()
+            .filter(|(_, v)| v.status != Status::Banned)
+            .collect::<HashMap<String, Peers>>();
+        let mut ip_vec: Vec<String> = Vec::new();
 
-        // get  list of peer IPs we know about,
-        // excludes banned peers and sorts the peers from "best" to "worst"
-        ///let not_banned = peer_list.clone().into_iter().map(|(_, v)| v.status != Status::Banned).collect();
-        println!("banned not {:?}",aze.keys());
-        //let list: Vec<&String> = Vec::from_iter(not_banned.keys());
+        for ip in good_peer_ips.keys() {
+            ip_vec.push(ip.to_string());
+        }
+        ip_vec
     }
 
     // Get message from peer channel
