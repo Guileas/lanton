@@ -54,6 +54,9 @@ impl NetworkController {
             peers: Arc::new(Mutex::new(known_peers)),
             channel: channel(4096),
         };
+        println!("{:?}",network_controller.peers);
+        network_controller.get_good_peer_ips().await;
+        
         // Listen to new TCP connections
         network_controller
             .create_tcp_listener(
@@ -87,11 +90,10 @@ impl NetworkController {
     ) -> Result<(), Box<dyn Error>> {
         // Listener channel
         let tx = self.channel.0.clone();
-        let peer_list = self.peers.lock().await;
+        let mut peer_list = self.peers.lock().await;
 
         // Listen to TCP connection
         let listener = TcpListener::bind(format!("127.0.0.40:{}", port)).await?;
-        let mut peer_list = self.peers.lock().await;
         // TODO: enable this
         //tokio::spawn(async move {
         loop {
@@ -315,7 +317,7 @@ impl NetworkController {
                 if peer.status == Status::OutHandshaking {
                     status = Status::OutAlive;
                 }
-                
+
                 peer_list.insert(
                     String::from(ip),
                     Peers {
@@ -381,9 +383,19 @@ impl NetworkController {
         // should merge the new peers to the existing peer list in a smart way
     }
 
-    pub fn get_good_peer_ips(&mut self) -> () {
+    pub async fn get_good_peer_ips(&mut self) {
+        let mut peer_list = self.peers.lock().await;
+        let aze = peer_list
+        .clone()
+        .into_iter()
+        .filter(|(_, v)| v.status != Status::Banned)
+        .collect::<HashMap<String, Peers>>();
+
         // get  list of peer IPs we know about,
         // excludes banned peers and sorts the peers from "best" to "worst"
+        ///let not_banned = peer_list.clone().into_iter().map(|(_, v)| v.status != Status::Banned).collect();
+        println!("banned not {:?}",aze.keys());
+        //let list: Vec<&String> = Vec::from_iter(not_banned.keys());
     }
 
     // Get message from peer channel
