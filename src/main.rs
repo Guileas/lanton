@@ -1,20 +1,18 @@
-use crate::network::peers::Peers;
+use crate::network::peer::Peer;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::channel;
 use network::controller::NetworkControllerEvent;
 use std::error::Error;
-use tokio::net::{TcpListener, TcpStream};
 
 mod network;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    
 
     // launch network controller
     let mut net = network::controller::NetworkController::new(
-        // peers_file,
+        // peer_file,
         // listen_port,
         // target_outgoing_connections,
         // max_incoming_connections,
@@ -26,10 +24,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "peers.json",
         8080,
         2,
+        1,
         2,
         2,
-        2,
-        4,
+        1,
         8,
         5,
     ).await?;
@@ -42,32 +40,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // loop over messages coming from the network controller
     loop {
         tokio::select! {
-            // Receive info from listener
-            /*evt = rx.recv() => match evt {
-                Some(msg) => match msg {
-                },
-                None => println!("Error with channel"),
-            };*/
-
             evt = net.wait_event() => match evt {
                 Ok(msg) => match msg {
                         network::controller::NetworkControllerEvent::CandidateConnection (ip, socket, is_outgoing) => {
-                            
-                            match Peers::make_handshake(ip, socket, is_outgoing).await {
-                                Ok(peer) => {
-                                    //net.feedback_peer_alive(ip).await;
-
-                                    //net.feedback_peer_list(list_of_ips).await;
+                            match Peer::make_handshake(socket).await {
+                                Ok(_) => {
+                                    net.feedback_peer_alive(&ip).await;
                                 }
                                 Err(e) => {
-                                    //net.feedback_peer_failed(ip).await;
+                                    // Update peer if handshake couldn't have been done 
+                                    net.feedback_peer_failed(&ip).await;
                                 }
                             }
                     }
 
                 },
-                Err(e) => return Err(e.into())
+                Err(e) => {
+                    println!("Main error: {:?}", e); return Err(e.into())
+                }
             }
         }
     }
+
+    // TODO: closed the peer connection cleanly
+
 }

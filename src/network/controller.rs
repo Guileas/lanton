@@ -1,16 +1,13 @@
-use crate::network::peers::{Peers, Status};
+use crate::network::peer::{Peer, Status};
 use chrono::Utc;
-use std::any::Any;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::hash::Hash;
 use std::io::Write;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::{fs::File, io::Read};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::Receiver;
@@ -25,7 +22,7 @@ pub enum NetworkControllerEvent {
 }
 
 pub struct NetworkController {
-    pub peers: Arc<Mutex<HashMap<String, Peers>>>,
+    pub peers: Arc<Mutex<HashMap<String, Peer>>>,
     pub channel: (
         Sender<NetworkControllerEvent>,
         Receiver<NetworkControllerEvent>,
@@ -48,13 +45,16 @@ impl NetworkController {
         let mut peers_file = File::open(peers_file_path)?;
         let mut content = String::new();
         peers_file.read_to_string(&mut content)?;
-        let known_peers: HashMap<String, Peers> = serde_json::from_str(&content)?;
+        let known_peers: HashMap<String, Peer> = serde_json::from_str(&content)?;
 
         let mut network_controller: NetworkController = NetworkController {
             peers: Arc::new(Mutex::new(known_peers)),
             channel: channel(4096),
         };
-        
+
+        //network_controller.regulate_idle_peers(max_idle_peers).await;
+        //network_controller.regulate_banned_peers(max_banned_peers).await;
+
         // Listen to new TCP connections
         network_controller
             .create_tcp_listener(
@@ -134,65 +134,38 @@ impl NetworkController {
 
         // Listen to TCP connection
         let listener = TcpListener::bind(format!("127.0.0.40:{}", port)).await?;
-        // TODO: enable this
+
+        // TODO: enable tokio async loop
         //tokio::spawn(async move {
         loop {
-            let current_inAlive_peer_sum = peer_list
+            let current_in_alive_peer_sum = peer_list
                 .clone()
                 .into_iter()
                 .filter(|(_, v)| v.status == Status::InAlive)
-                .collect::<HashMap<String, Peers>>()
+                .collect::<HashMap<String, Peer>>()
                 .len() as u64;
 
-            let current_inHandshaking_peer_sum = peer_list
+            let current_in_handshaking_peer_sum = peer_list
                 .clone()
                 .into_iter()
                 .filter(|(_, v)| v.status == Status::InHandshaking)
-                .collect::<HashMap<String, Peers>>()
+                .collect::<HashMap<String, Peer>>()
                 .len() as u64;
 
-            println!("{:?}", peer_list.len());
-            println!("{:?}", max_incoming_connections);
-
             // Check if there's still some place to add InAlive and InHandshaking in the peer list else reject connection
-            if current_inAlive_peer_sum > max_incoming_connections
-                || current_inHandshaking_peer_sum > max_simultaneous_connection_attempts
+            if current_in_alive_peer_sum > max_incoming_connections
+                || current_in_handshaking_peer_sum > max_simultaneous_connection_attempts
             {
-                println!("Two much peer in this state");
                 return Ok(());
             }
             // Accept new incoming connexion
             match listener.accept().await {
                 Ok((mut _socket, addr)) => {
-                    println!("new client: {:?}", addr.ip());
-                    //TO REMOVE TEST TCP CONNECTION
-                    /*loop {
-                        println!("Blob is here!");
-
-                        // In a loop, read data from the socket and write the data back.
-                        loop {
-                            let mut buf = vec![0; 1024];
-                            let n = _socket
-                                .read(&mut buf)
-                                .await
-                                .expect("failed to read data from socket");
-
-                            if n == 0 {
-                                //return;
-                            }
-
-                            _socket
-                                .write_all(&buf[0..n])
-                                .await
-                                .expect("failed to write data to socket");
-                        }
-                    }*/
-
                     if !peer_list.contains_key(&addr.ip().to_string()) {
                         // Add new to connected list
                         peer_list.insert(
                             addr.ip().to_string(),
-                            Peers {
+                            Peer {
                                 status: Status::InHandshaking,
                                 last_alive: None,
                                 last_failure: None,
@@ -204,7 +177,7 @@ impl NetworkController {
                             Some(peer) => {
                                 peer_list.clone().insert(
                                     addr.ip().to_string(),
-                                    Peers {
+                                    Peer {
                                         status: Status::InHandshaking,
                                         last_alive: peer.last_alive,
                                         last_failure: peer.last_failure,
@@ -223,16 +196,10 @@ impl NetworkController {
                     ))
                     .await;
                 }
-                Err(e) => {
-                    // Set peer status to
-                    // Set peer last_failure
-                    println!("couldn't get client: {:?}", e)
-                }
+                Err(e) => {}
             }
         }
         //});
-
-        Ok(())
     }
 
     // Node try to connect to a peer
@@ -250,15 +217,16 @@ impl NetworkController {
             .filter(|(_, v)| {
                 v.status == Status::OutConnecting || v.status == Status::OutHandshaking
             })
-            .collect::<HashMap<String, Peers>>()
+            .collect::<HashMap<String, Peer>>()
             .len() as u64;
 
         if connection_sum < max_outgoing_connection_attempts {
+            // Set peer status to OutConnecting
             match peer_list.get(&peer_adress.to_string()) {
                 Some(peer) => {
                     peer_list.clone().insert(
                         peer_adress.to_string(),
-                        Peers {
+                        Peer {
                             status: Status::OutConnecting,
                             last_alive: peer.last_alive,
                             last_failure: peer.last_failure,
@@ -267,14 +235,14 @@ impl NetworkController {
                 }
                 None => {}
             };
-
+            // Connect to peer, set it status to OutHandshaking & send msg in channel
             match TcpStream::connect(peer_adress).await {
                 Ok(stream) => {
                     match peer_list.get(&peer_adress.to_string()) {
                         Some(peer) => {
                             peer_list.clone().insert(
                                 peer_adress.to_string(),
-                                Peers {
+                                Peer {
                                     status: Status::OutHandshaking,
                                     last_alive: peer.last_alive,
                                     last_failure: peer.last_failure,
@@ -290,18 +258,14 @@ impl NetworkController {
                         true,
                     ))
                     .await;
-
-                    println!("Connected to the server!");
                 }
-                Err(err) => {
-                    println!("Couldn't connect to server...");
-                }
+                Err(err) => {}
             }
         }
         Ok(())
     }
 
-    // Check if the list have been updated if so update the file
+    // If peers have been updated write them in the JSON file
     async fn manage_peer_file(
         &self,
         peers_file_path: &str,
@@ -309,18 +273,19 @@ impl NetworkController {
     ) -> Result<(), Box<dyn Error>> {
         // TODO: implement tokio spawn
         loop {
+            // Wait some times before checking again
             sleep(Duration::from_secs(interval)).await;
 
             // TODO: Do I need to open it again?
             let mut peers_file = File::open(peers_file_path)?;
             let mut content = String::new();
             peers_file.read_to_string(&mut content)?;
-            let known_peers: HashMap<String, Peers> = serde_json::from_str(&content)?;
+            let known_peers: HashMap<String, Peer> = serde_json::from_str(&content)?;
 
-            // TODO: find a better way
+            // TODO: find a better way to extract data from Arc
             // Extract data from Arc
             let current_peers_clone = self.peers.lock().await;
-            let current_peers: HashMap<String, Peers> = current_peers_clone.clone();
+            let current_peers: HashMap<String, Peer> = current_peers_clone.clone();
 
             // Hashmap comparition to rewrite to replace file content with right peers
             if !NetworkController::compare_list(&current_peers, &known_peers) {
@@ -338,9 +303,9 @@ impl NetworkController {
 
     // Compare equality of two peer list
     // The current list we have and the one in the JSON file
-    pub fn compare_list<Peers: Eq + Hash>(
-        a: &HashMap<String, Peers>,
-        b: &HashMap<String, Peers>,
+    pub fn compare_list<Peer: Eq + Hash>(
+        a: &HashMap<String, Peer>,
+        b: &HashMap<String, Peer>,
     ) -> bool {
         let a: HashSet<_> = a.iter().collect();
         let b: HashSet<_> = b.iter().collect();
@@ -348,6 +313,7 @@ impl NetworkController {
         a == b
     }
 
+    // Set peer status to InAlive or OutAlive & update last_alive
     pub async fn feedback_peer_alive(&mut self, ip: &str) {
         let mut peer_list = self.peers.lock().await;
         match peer_list.get(ip).cloned() {
@@ -360,7 +326,7 @@ impl NetworkController {
 
                 peer_list.insert(
                     String::from(ip),
-                    Peers {
+                    Peer {
                         status: status,
                         last_alive: Some(Utc::now()),
                         last_failure: peer.last_failure,
@@ -371,12 +337,13 @@ impl NetworkController {
         };
     }
 
+    // Set peer status to Banned & update last_failure
     pub async fn feedback_peer_banned(&mut self, ip: &str) -> () {
         let mut peer_list = self.peers.lock().await;
         match peer_list.get(ip).cloned() {
             Some(peer) => peer_list.insert(
                 String::from(ip),
-                Peers {
+                Peer {
                     status: Status::Banned,
                     last_alive: peer.last_alive,
                     last_failure: Some(Utc::now()),
@@ -386,12 +353,13 @@ impl NetworkController {
         };
     }
 
+    // Set peer status to Idle
     pub async fn feedback_peer_closed(&mut self, ip: &str) -> () {
         let mut peer_list = self.peers.lock().await;
         match peer_list.get(ip).cloned() {
             Some(peer) => peer_list.insert(
                 String::from(ip),
-                Peers {
+                Peer {
                     status: Status::Idle,
                     last_alive: peer.last_alive,
                     last_failure: peer.last_failure,
@@ -401,37 +369,61 @@ impl NetworkController {
         };
     }
 
+    // Set peer status to Idle & update last_failure
     pub async fn feedback_peer_failed(&self, ip: &str) -> () {
-        /*let mut peer_list = self.peers.lock().await;
-        match peer_list.get(ip) {
-            Some(peer) => {
-                peer_list.insert(
-                    String::from(ip),
-                    Peers {
-                        status: Status::Idle,
-                        last_alive: peer.last_alive,
-                        last_failure: Some(Utc::now()),
-                    }
-                )
-            }
-            None => { println!("No peer found for this Ip");}
-        };*/
+        let mut peer_list = self.peers.lock().await;
+        match peer_list.get(ip).cloned() {
+            Some(peer) => peer_list.insert(
+                String::from(ip),
+                Peer {
+                    status: Status::Idle,
+                    last_alive: peer.last_alive,
+                    last_failure: Some(Utc::now()),
+                },
+            ),
+            None => None,
+        };
     }
 
     //after handshake, and then again periodically, main.rs should ask alive peers for the list of peer IPs they know about, and feed //them to the network controller:
     pub async fn feedback_peer_list(&mut self, list_of_ips: Vec<&str>) -> () {
-        // should merge the new peers to the existing peer list in a smart way
+        let mut peer_list = self.peers.lock().await;
+
+        // TODO: merge the new peers to the existing peer list in a smart way
+        for ip in list_of_ips {
+            // If peer is already known don't do anything
+            if peer_list.contains_key(ip) {
+                return;
+            }
+
+            // Create a new peer and add it to the current known peers
+            let new_peer: Peer = Peer::new();
+            peer_list.insert(ip.to_string(), new_peer);
+        }
     }
 
     // Send list of peer IPs we know about to peers
     pub async fn get_good_peer_ips(&mut self) -> Vec<String> {
         let peer_list = self.peers.lock().await;
+
         // TODO: sorts the peers from "best" to "worst"
+        /*
+         * Best
+         * last_alive newest, last_failure None,
+         * last_alive newest, last_failure oldest,
+         *
+         * last_alive oldest, last_failure newest
+         * last_alive None, last_failure newest
+         * Worst
+         *
+         * or by status
+         * or combining both
+         */
         let good_peer_ips = peer_list
             .clone()
             .into_iter()
             .filter(|(_, v)| v.status != Status::Banned)
-            .collect::<HashMap<String, Peers>>();
+            .collect::<HashMap<String, Peer>>();
         let mut ip_vec: Vec<String> = Vec::new();
 
         for ip in good_peer_ips.keys() {
@@ -440,7 +432,7 @@ impl NetworkController {
         ip_vec
     }
 
-    // Get message from peer channel
+    // Get message from channel
     pub async fn wait_event(&mut self) -> Result<NetworkControllerEvent, String> {
         self.channel
             .1
