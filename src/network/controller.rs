@@ -69,14 +69,56 @@ impl NetworkController {
             .manage_peer_file(peers_file_path, peer_file_dump_interval_seconds)
             .await?;
 
-        // TODO: define who is "the most promising peer"
-        // Select peer in list who has the right status and is most promising to be connected with
-        network_controller
-            .peer_connection("127.0.2.51", max_simultaneous_outgoing_connection_attempts)
-            .await?;
+        // Launch TCP connection to peer when there's not enought outgoing connections
+        if network_controller.regulate_outgoing_connection().await < target_outgoing_connections {
+            // TODO: define who is "the most promising peer"
+            network_controller
+                .peer_connection("127.0.2.51", max_simultaneous_outgoing_connection_attempts)
+                .await?;
+        }
 
         // Remove Idle using there last_alive value or if they are None
         Ok(network_controller)
+    }
+
+    // Count the number of current OutAlive peers
+    async fn regulate_outgoing_connection(&self) -> u64 {
+        let peer_list = self.peers.lock().await;
+        peer_list
+            .clone()
+            .into_iter()
+            .filter(|(_, v)| v.status == Status::OutAlive)
+            .collect::<HashMap<String, Peer>>()
+            .len() as u64
+    }
+
+    // Remove idle peers from list if there's too much of them
+    async fn regulate_idle_peers(&self, max_idle_peers: u64) {
+        let peer_list = self.peers.lock().await;
+        let current_idle_peer_sum = peer_list
+            .clone()
+            .into_iter()
+            .filter(|(_, v)| v.status == Status::Idle)
+            .collect::<HashMap<String, Peer>>();
+
+        // TODO: Remove from peer list in this order:
+        // 1 - peer with Idle, last_alive None and oldest last_failure
+        // 2 - peer with Idle, last_alive oldest and oldest last_failure
+        // 2 - peer with Idle, last_alive oldest and last_failure None
+    }
+
+    // Remove banned peers from list if there's too much of them
+    async fn regulate_banned_peers(&self, max_banned_peers: u64) {
+        let peer_list = self.peers.lock().await;
+        let current_idle_peer_sum = peer_list
+            .clone()
+            .into_iter()
+            .filter(|(_, v)| v.status == Status::Banned)
+            .collect::<HashMap<String, Peer>>();
+
+        // TODO: Remove from peer list in this order:
+        // 1 - peer with Banned, last_alive None and oldest last_failure
+        // 2 - peer with Idle, last_alive oldest and oldest last_failure
     }
 
     // Listen to new collection and propagate the info
